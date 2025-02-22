@@ -1,0 +1,797 @@
+# **Загрузка всех библиотек**
+
+Библиотеки для парсинга страниц:
+
+import requests
+from bs4 import BeautifulSoup
+import time
+import re
+
+Библиотеки для работы с PDF:
+
+!pip install pymupdf
+import fitz
+
+Библиотека для расстановки по алфавиту:
+
+import string
+
+Библиотеки для токенизации, лемматизации финского языка
+
+!pip install stanza
+
+import stanza
+stanza.download('fi')
+nlp = stanza.Pipeline('fi', processors='tokenize,pos,lemma')
+
+from collections import Counter
+
+import matplotlib.pyplot as plt
+import numpy as np
+
+# **Выгрузка первого текста**
+
+P.S. Выгрузка с сайта может занять до 5 минут, т.к. в тексте много страниц
+
+def get_text(url):
+    response = requests.get(url)
+    response.encoding = "utf-8"
+    if response.status_code != 200:
+        print(f"Ошибка на странице: {url}")
+        return ""
+
+    soup = BeautifulSoup(response.text, "html.parser")
+    text_blocks = soup.find_all("br")
+    text = ""
+    for br in text_blocks:
+        if br.next_sibling and isinstance(br.next_sibling, str):
+            line = br.next_sibling.strip()
+            if not re.search(r'\(1918\)|Här nedan syns|mode=normal|https://runeberg.org/ahvenkulta/\d{4}\.html', line):
+                text += line + "\n"
+
+    return text.strip()
+
+def scrape_book(base_url, start_page, end_page):
+    all_text = ""
+
+    for i in range(start_page, end_page + 1, 1):
+        page_number = str(i).zfill(4)
+        url = f"{base_url}{page_number}.html"
+        page_text = get_text(url)
+        all_text += page_text + "\n\n"
+        time.sleep(1)
+
+    return all_text
+
+if __name__ == "__main__":
+    base_url = "https://runeberg.org/ahvenkulta/"
+    start_page = 9   #первая страница книги
+    end_page = 142   #последняя страница
+
+    purefinnish_text = scrape_book(base_url, start_page, end_page)
+
+    with open("purefinnish_text.txt", "w", encoding="utf-8") as file:
+        file.write(purefinnish_text)
+
+Посчитаем, сколько слов получилось в итоговом файле
+
+with open("purefinnish_text.txt", "r", encoding="utf-8") as f:
+    text = f.read()
+words = text.split()
+print(f"Количество слов: {len(words)}")
+
+# **Выгрузка текста с заимствованиями**
+
+def loanwords_text(Gradu, skip_pages=None):
+    text = ""
+    skip_pages = set(skip_pages) if skip_pages else set()
+
+    with fitz.open(Gradu) as doc:
+        for page_num, page in enumerate(doc, start=1):
+          if page_num in skip_pages:
+            continue
+          text += page.get_text("text") + "\n"
+    return text
+
+pdf_file = "Gradu.pdf"
+skip_pages = {2, 11, 13} | set(range(69, 78))
+loanwords_text = loanwords_text(pdf_file, skip_pages)
+
+with open("loanwords_text.txt", "w", encoding="utf-8") as f:
+    f.write(loanwords_text)
+
+Убираю из текста слова на другом языке (английском)
+
+!pip install lingua-language-detector
+
+from lingua import Language, LanguageDetectorBuilder
+
+EXCEPTIONS = {"on", "enantiomeerin", "enantiomeeri",
+              "enantiomeeria", "enantiomeerien", "polystyreenin",
+              "prioriteetin", "bromi", "happea"}
+
+def detect(word):
+    if word.lower() in EXCEPTIONS:
+        return "FINNISH", 1.0
+    languages = [Language.ENGLISH, Language.FINNISH]
+    detector = LanguageDetectorBuilder.from_languages(*languages).build()
+
+    confidence_values = detector.compute_language_confidence_values(word)
+    finnish_confidence = next((x.value for x in confidence_values if x.language == Language.FINNISH), 0)
+    return finnish_confidence >= 0.5
+
+with open("loanwords_text.txt", "r", encoding="utf-8") as f:
+    words = f.read().split()
+
+finnish_words = [word for word in words if detect(word)]
+
+with open("loanwords_text_finnishonly.txt", "w", encoding="utf-8") as f:
+    f.write("\n".join(finnish_words))
+
+Посчитаем, сколько слов получилось в итоговом файле
+
+with open("loanwords_text_finnishonly.txt", "r", encoding="utf-8") as f:
+    text = f.read()
+words = text.split()
+print(f"Количество слов: {len(words)}")
+
+# **Предобработка текстов**
+
+def preprocess_text(file_path, output_path):
+    with open(file_path, 'r', encoding='utf-8') as file:
+        text = file.read()
+
+    # Приведение к нижнему регистру
+    text = text.lower()
+
+    # Удаление цифр
+    text = re.sub(r'\d+', '', text)
+
+    # Удаление содержимого в скобках (круглых и квадратных)
+    text = re.sub(r'\(.*?\)|\[.*?\]', '', text, flags=re.DOTALL)
+
+    # Удаление аббревиатур (слов с точками)
+    text = re.sub(r'\b(?:[a-zäöå]+\.){2,}\b', '', text)
+
+    # Удаление пунктуации
+    text = re.sub(r'[^\w\säöå]', '', text)
+
+    # Удаление лишних пробелов
+    text = re.sub(r'\s+', ' ', text).strip()
+
+    # Удаление повторяющихся слов
+    words = text.split()
+    seen = set()
+    unique_words = []
+
+    for word in words:
+        if word not in seen and len(word) > 2:
+          seen.add(word)
+          unique_words.append(word)
+
+    cleaned_text = ' '.join(unique_words)
+
+    with open(output_path, 'w', encoding='utf-8') as output_file:
+        output_file.write(cleaned_text)
+
+    return len(unique_words)
+
+input_files = ['purefinnish_text.txt', 'loanwords_text_finnishonly.txt']
+output_files = ['clean_pure_text.txt', 'clean_loanwords_text.txt']
+
+Посчитаем количество слов в итоговых файлах
+
+def count_words(file_path):
+    with open(file_path, "r", encoding="utf-8") as file:
+        words = file.read().split()
+        return len(words)
+
+file1 = "clean_pure_text.txt"
+file2 = "clean_loanwords_text.txt"
+
+word_count1 = count_words(file1)
+word_count2 = count_words(file2)
+
+print(f"Количество слов в чисто финском тексте: {word_count1}")
+print(f"Количество слов в тексте с заимствованиями: {word_count2}")
+
+!pip install selenium
+!apt-get update 
+!apt install chromium-chromedriver
+
+
+# **ЧАСТОТНЫЙ АНАЛИЗ**
+
+## 1. Частотный анализ гласных
+
+def all_vowels(vowel_file):
+    with open(vowel_file, "r", encoding="utf-8") as f:
+        vowels = f.read().strip().split()
+    return vowels
+
+def all_words (file_path):
+    with open(file_path, "r", encoding="utf-8") as file:
+        words = file.read().lower().split()
+    return words
+
+def vowel_frequencies(file_path, finnish_vowels):
+    vowels = all_vowels(finnish_vowels)
+    words = all_words(file_path)
+    front_vowels = {"ä", "ö", "y"}
+    back_vowels = {"a", "o", "u"}
+    mid_vowels = {"e", "i"}
+
+    vowel_counts = Counter()
+    front_count, back_count = 0, 0
+    start_vowel_counts = Counter()
+    mid_vowel_counts = Counter()
+    end_vowel_counts = Counter()
+
+    for word in words:
+        word_vowels = [ch for ch in word if ch in vowels]
+        vowel_counts.update(word_vowels)
+
+        if any(ch in front_vowels for ch in word_vowels):
+            front_count += 1
+        if any(ch in back_vowels for ch in word_vowels):
+            back_count += 1
+
+        if word_vowels:
+            start_vowel_counts[word_vowels[0]] += 1
+            if len(word_vowels) > 2:
+                mid_vowel_counts[word_vowels[len(word_vowels)//2]] += 1
+            end_vowel_counts[word_vowels[-1]] += 1
+    return vowel_counts, front_count, back_count, start_vowel_counts, mid_vowel_counts, end_vowel_counts
+
+file1 = "clean_pure_text.txt"   # Оригинальный текст
+file2 = "clean_loanwords_text.txt"  # Заимствованные слова
+vowel_file = "finnish_vowels.txt"
+
+# Анализ частоты гласных в обоих текстах
+freq1, front1, back1, start1, mid1, end1 = vowel_frequencies(file1, vowel_file)
+freq2, front2, back2, start2, mid2, end2 = vowel_frequencies(file2, vowel_file)
+
+# Вывод всех данных (ВЕРНУЛИ ВСЁ!)
+print("\nЧастота гласных в Тексте 1:", freq1)
+print("Частота гласных в Тексте 2:", freq2)
+
+print(f"\nПередние гласные: Текст 1 -> {front1}, Текст 2 -> {front2}")
+print(f"Задние гласные: Текст 1 -> {back1}, Текст 2 -> {back2}")
+
+print("\nЧастота гласных в начале слова:")
+print("Текст 1:", start1)
+print("Текст 2:", start2)
+
+print("\nЧастота гласных в середине слова:")
+print("Текст 1:", mid1)
+print("Текст 2:", mid2)
+
+print("\nЧастота гласных в конце слова:")
+print("Текст 1:", end1)
+print("Текст 2:", end2)
+
+
+## Визуализация частотности гласных
+
+def normalize_frequencies(freq, total_vowels):
+    """Преобразует абсолютные частоты в проценты"""
+    return {vowel: (count / total_vowels) * 100 for vowel, count in freq.items()}
+
+# Считаем общее количество гласных в каждом тексте
+total_vowels1 = sum(freq1.values())
+total_vowels2 = sum(freq2.values())
+
+# Преобразуем в проценты
+freq1_percent = normalize_frequencies(freq1, total_vowels1)
+freq2_percent = normalize_frequencies(freq2, total_vowels2)
+
+
+def visualize_vowel_frequencies(freq1, freq2):
+    """Строит столбчатый график частоты гласных (в процентах) по убыванию"""
+
+    # Объединяем частоты из обоих текстов
+    combined_freq = {vowel: freq1.get(vowel, 0) + freq2.get(vowel, 0) for vowel in set(freq1) | set(freq2)}
+
+    # Сортируем по убыванию общей частоты
+    sorted_vowels = sorted(combined_freq.keys(), key=lambda v: combined_freq[v], reverse=True)
+
+    # Теперь берем частоты в порядке убывания
+    values1 = [freq1.get(vowel, 0) for vowel in sorted_vowels]
+    values2 = [freq2.get(vowel, 0) for vowel in sorted_vowels]
+
+    x = np.arange(len(sorted_vowels))
+
+    plt.figure(figsize=(10, 6))
+    width = 0.4  # Ширина столбцов
+
+    plt.bar(x - width/2, values1, width=width, label="Оригинальный текст", alpha=0.7)
+    plt.bar(x + width/2, values2, width=width, label="Заимствованные слова", alpha=0.7)
+
+    plt.xlabel("Гласные")
+    plt.ylabel("Частота (%)")
+    plt.title("Сравнение частотности гласных (в процентах, по убыванию)")
+    plt.xticks(ticks=x, labels=sorted_vowels)
+    plt.legend()
+    plt.grid(axis="y", linestyle="--", alpha=0.7)
+
+    plt.show()
+
+# Визуализация с сортировкой по убыванию
+visualize_vowel_frequencies(freq1_percent, freq2_percent)
+
+## Визуализация частотности гласных *по* ряду
+
+# Считаем общее количество гласных в каждом тексте
+total_vowels1 = sum(freq1.values())
+total_vowels2 = sum(freq2.values())
+
+# Передние, средние и задние гласные (группируем правильно!)
+front1_total = sum(freq1[v] for v in ["ä", "ö", "y"] if v in freq1)
+mid1_total = sum(freq1[v] for v in ["e", "i"] if v in freq1)
+back1_total = sum(freq1[v] for v in ["a", "o", "u"] if v in freq1)
+
+front2_total = sum(freq2[v] for v in ["ä", "ö", "y"] if v in freq2)
+mid2_total = sum(freq2[v] for v in ["e", "i"] if v in freq2)
+back2_total = sum(freq2[v] for v in ["a", "o", "u"] if v in freq2)
+
+# Преобразуем в проценты
+front1_percent = (front1_total / total_vowels1) * 100
+mid1_percent = (mid1_total / total_vowels1) * 100
+back1_percent = (back1_total / total_vowels1) * 100
+
+front2_percent = (front2_total / total_vowels2) * 100
+mid2_percent = (mid2_total / total_vowels2) * 100
+back2_percent = (back2_total / total_vowels2) * 100
+
+
+def front_mid_back_bar_chart(front1, mid1, back1, front2, mid2, back2):
+    """Строит столбчатый график для передних, средних и задних гласных (в процентах)"""
+    categories = ["Передние", "Средние", "Задние"]
+    values1 = [front1, mid1, back1]
+    values2 = [front2, mid2, back2]
+
+    x = np.arange(len(categories))
+
+    plt.figure(figsize=(8, 5))
+    plt.bar(x - 0.2, values1, width=0.4, label="Оригинальный текст", alpha=0.7)
+    plt.bar(x + 0.2, values2, width=0.4, label="Заимствованные слова", alpha=0.7)
+
+    plt.xticks(ticks=x, labels=categories)
+    plt.ylabel("Частота (%)")
+    plt.title("Сравнение передних, средних и задних гласных (%)")
+    plt.legend()
+    plt.grid(axis="y", linestyle="--", alpha=0.7)
+    plt.show()
+
+# Визуализация с процентными значениями
+front_mid_back_bar_chart(front1_percent, mid1_percent, back1_percent,
+                         front2_percent, mid2_percent, back2_percent)
+
+
+# **БЕЗ ЛЕММАТИЗАЦИИ**
+
+# Анализ сингармонизма без лемматизации
+import re
+from collections import Counter
+
+def load_vowels(file_path):
+    with open(file_path, "r", encoding="utf-8") as file:
+        lines = [line.strip() for line in file.readlines() if line.strip()]
+
+    if len(lines) < 3:
+        return {
+            "front": {"ä", "ö", "y"},  # Передние гласные
+            "back": {"a", "o", "u"},   # Задние гласные
+            "neutral": {"e", "i"}       # Нейтральные гласные
+        }
+
+    vowels = {
+        "front": set(lines[0]),  # Передние гласные (ä, ö, y)
+        "back": set(lines[1]),   # Задние гласные (a, o, u)
+        "neutral": set(lines[2])  # Нейтральные гласные (e, i)
+    }
+    return vowels
+
+def check_vowel_harmony(word, vowels):
+    front_vowel = any(char in vowels["front"] for char in word)
+    back_vowel = any(char in vowels["back"] for char in word)
+    return not (front_vowel and back_vowel)  # True, если слово гармонично
+
+def analyze_text_for_harmony(text, vowels):
+    words = text.split()
+    disharmonic_words = [word for word in words if not check_vowel_harmony(word, vowels)]
+    return disharmonic_words
+
+def process_and_analyze(input_file, vowels_file, output_file):
+    with open(input_file, "r", encoding="utf-8") as file:
+        text = file.read()
+
+    vowels = load_vowels(vowels_file)
+    disharmonic_words = analyze_text_for_harmony(text, vowels)
+
+    with open(output_file, "w", encoding="utf-8") as file:
+        file.write("\n".join(disharmonic_words))
+
+    print(f"Файл {output_file} содержит {len(disharmonic_words)} слов, нарушающих сингармонизм.")
+
+def main():
+    vowels_file = "finnish_vowels.txt"
+    process_and_analyze("clean_pure_text.txt", vowels_file, "pure_finnish_harmony_no_lemm.txt")
+    process_and_analyze("clean_loanwords_text.txt", vowels_file, "borrowed_finnish_harmony_no_lemm.txt")
+
+if __name__ == "__main__":
+    main()
+
+# Подсчет статистики сингармонизма без лемматизации
+
+def calculate_harmony_percentage(input_file, disharmonic_file):
+    with open(input_file, "r", encoding="utf-8") as file:
+        words = file.read().split()
+
+    with open(disharmonic_file, "r", encoding="utf-8") as file:
+        disharmonic_words = file.read().splitlines()
+
+    total_words = len(words)
+    disharmonic_count = len(disharmonic_words)
+    harmonic_count = total_words - disharmonic_count
+
+    if total_words > 0:
+        harmonic_percentage = (harmonic_count / total_words) * 100
+        disharmonic_percentage = (disharmonic_count / total_words) * 100
+    else:
+        harmonic_percentage = disharmonic_percentage = 0
+
+    print(f"Файл {input_file}:")
+    print(f"Гармоничные слова: {harmonic_count} ({harmonic_percentage:.2f}%)")
+    print(f"Нарушающие сингармонизм: {disharmonic_count} ({disharmonic_percentage:.2f}%)")
+    print("-" * 50)
+
+# Пути к файлам
+files = [
+    ("clean_pure_text.txt", "pure_finnish_harmony_no_lemm.txt"),
+    ("clean_loanwords_text.txt", "borrowed_finnish_harmony_no_lemm.txt")
+]
+
+# Запуск анализа
+for input_file, disharmonic_file in files:
+    calculate_harmony_percentage(input_file, disharmonic_file)
+
+
+# **С ЛЕММАТИЗАЦИЕЙ**
+
+def lemmatize_finnish_file(input_file, output_file):
+    with open(input_file, "r", encoding="utf-8") as f:
+        text = f.read()
+    doc = nlp(text)
+
+    lemmatized_text = ' '.join([word.lemma for sentence in doc.sentences for word in sentence.words])
+
+    with open(output_file, "w", encoding="utf-8") as f:
+        f.write(lemmatized_text)
+
+input_files = ['clean_pure_text.txt', 'clean_loanwords_text.txt']
+output_files = ['lemmatized_pure.txt', 'lemmatized_loanwords.txt']
+
+for inp, out in zip(input_files, output_files):
+    lemmatize_finnish_file(inp, out)
+
+
+Обработка лемматизированных файлов
+
+def process_sorted_unique_words(input_file, output_file):
+    with open(input_file, "r", encoding="utf-8") as f:
+        words = f.read().split()
+
+    # Убираем дубликаты и сортируем слова в алфавитном порядке
+    unique_sorted_words = sorted(set(words))
+
+    # Записываем результат в новый файл
+    with open(output_file, "w", encoding="utf-8") as f:
+        f.write(" ".join(unique_sorted_words))
+
+    print(f'Файл {output_file} содержит {len(unique_sorted_words)} уникальных слов')
+
+# Пути к файлам
+input_files = ['lemmatized_pure.txt', 'lemmatized_loanwords.txt']
+output_files = ['sorted_pure_finnish.txt', 'sorted_text2.txt']
+
+# Обработка файлов
+for inp, out in zip(input_files, output_files):
+    process_sorted_unique_words(inp, out)
+
+
+Проверяем сингармонизм
+
+import re
+from collections import Counter
+
+def load_vowels(file_path):
+    with open(file_path, "r", encoding="utf-8") as file:
+        lines = [line.strip() for line in file.readlines() if line.strip()]
+
+    if len(lines) < 3:
+        return {
+            "front": {"ä", "ö", "y"},  # Передние гласные
+            "back": {"a", "o", "u"},   # Задние гласные
+            "neutral": {"e", "i"}       # Нейтральные гласные
+        }
+
+    vowels = {
+        "front": set(lines[0]),  # Передние гласные (ä, ö, y)
+        "back": set(lines[1]),   # Задние гласные (a, o, u)
+        "neutral": set(lines[2])  # Нейтральные гласные (e, i)
+    }
+    return vowels
+
+def check_vowel_harmony(word, vowels):
+    front_vowel = any(char in vowels["front"] for char in word)
+    back_vowel = any(char in vowels["back"] for char in word)
+    return not (front_vowel and back_vowel)  # True, если слово гармонично
+
+def analyze_text_for_harmony(text, vowels):
+    words = text.split()
+    disharmonic_words = [word for word in words if not check_vowel_harmony(word, vowels)]
+    return disharmonic_words
+
+def process_and_analyze(input_file, vowels_file, output_file):
+    with open(input_file, "r", encoding="utf-8") as file:
+        text = file.read()
+
+    vowels = load_vowels(vowels_file)
+    disharmonic_words = analyze_text_for_harmony(text, vowels)
+
+    with open(output_file, "w", encoding="utf-8") as file:
+        file.write("\n".join(disharmonic_words))
+
+    print(f"Файл {output_file} содержит {len(disharmonic_words)} слов, нарушающих сингармонизм.")
+
+def main():
+    vowels_file = "finnish_vowels.txt"
+    process_and_analyze("sorted_pure_finnish.txt", vowels_file, "pure_finnish_harmony.txt")
+    process_and_analyze("sorted_text2.txt", vowels_file, "borrowed_finnish_harmony.txt")
+
+if __name__ == "__main__":
+    main()
+
+Статистика
+
+def calculate_harmony_percentage(input_file, disharmonic_file):
+    with open(input_file, "r", encoding="utf-8") as file:
+        words = file.read().split()
+
+    with open(disharmonic_file, "r", encoding="utf-8") as file:
+        disharmonic_words = file.read().splitlines()
+
+    total_words = len(words)
+    disharmonic_count = len(disharmonic_words)
+    harmonic_count = total_words - disharmonic_count
+
+    if total_words > 0:
+        harmonic_percentage = (harmonic_count / total_words) * 100
+        disharmonic_percentage = (disharmonic_count / total_words) * 100
+    else:
+        harmonic_percentage = disharmonic_percentage = 0
+
+    print(f"Файл {input_file}:")
+    print(f"Гармоничные слова: {harmonic_count} ({harmonic_percentage:.2f}%)")
+    print(f"Нарушающие сингармонизм: {disharmonic_count} ({disharmonic_percentage:.2f}%)")
+    print("-" * 50)
+
+# Пути к файлам
+files = [
+    ("sorted_pure_finnish.txt", "pure_finnish_harmony.txt"),
+    ("sorted_text2.txt", "borrowed_finnish_harmony.txt")
+]
+
+# Запуск анализа
+for input_file, disharmonic_file in files:
+    calculate_harmony_percentage(input_file, disharmonic_file)
+
+
+# Сравнение данных
+
+import matplotlib.pyplot as plt
+import numpy as np
+
+def load_statistics(file_path):
+    """Загружает статистику из файла с анализом сингармонизма, обрабатывая ошибки."""
+    stats = {}
+    try:
+        with open(file_path, "r", encoding="utf-8") as file:
+            lines = file.readlines()
+        
+        for line in lines:
+            parts = line.strip().split(":")
+            if len(parts) == 2:
+                key, value = parts[0].strip(), parts[1].strip()
+                try:
+                    if "%" in value:
+                        stats[key] = float(value.replace("%", ""))
+                    else:
+                        stats[key] = int(value) if value.isdigit() else 0
+                except ValueError:
+                    print(f"Ошибка при обработке строки: {line.strip()}")
+    except FileNotFoundError:
+        print(f"Файл {file_path} не найден.")
+    except Exception as e:
+        print(f"Ошибка при загрузке {file_path}: {e}")
+    
+    return stats
+
+# Файлы с результатами
+stats_files = {
+    "Без лемматизации (чисто финский)": "pure_finnish_harmony_no_lemm.txt",
+    "Без лемматизации (с заимствованиями)": "borrowed_finnish_harmony_no_lemm.txt",
+    "С лемматизацией (чисто финский)": "pure_finnish_harmony_lemma.txt",
+    "С лемматизацией (с заимствованиями)": "borrowed_finnish_harmony_lemma.txt",
+}
+
+# Загружаем данные
+statistics = {name: load_statistics(path) for name, path in stats_files.items()}
+
+# Фильтруем файлы, которые удалось загрузить
+statistics = {k: v for k, v in statistics.items() if v}
+
+# Извлекаем данные для графиков
+labels = list(statistics.keys())
+harmonic_values = [statistics[label].get("Гармоничные слова", 0) for label in labels]
+disharmonic_values = [statistics[label].get("Нарушающие сингармонизм", 0) for label in labels]
+
+# Построение графиков
+x = np.arange(len(labels))
+width = 0.4
+fig, ax = plt.subplots()
+rects1 = ax.bar(x - width/2, harmonic_values, width, label='Гармоничные слова')
+rects2 = ax.bar(x + width/2, disharmonic_values, width, label='Нарушающие сингармонизм')
+
+ax.set_ylabel('Количество слов')
+ax.set_title('Сравнение уровня сингармонизма до и после лемматизации')
+ax.set_xticks(x)
+ax.set_xticklabels(labels, rotation=20, ha="right")
+ax.legend()
+
+plt.show()
+
+
+# АНАЛИЗ БИГРАММ И ТРИГРАММ
+
+
+import numpy as np
+
+def calculate_average_word_length(file_path):
+    """Вычисляет среднюю длину слов в файле."""
+    try:
+        with open(file_path, "r", encoding="utf-8") as file:
+            words = [word for line in file for word in line.strip().split() if word.isalpha()]
+        avg_length = np.mean([len(word) for word in words]) if words else 0
+        print(f"Средняя длина слова в {file_path}: {avg_length:.2f}")
+        return avg_length
+    except FileNotFoundError:
+        print(f"Файл {file_path} не найден.")
+        return None
+
+# Файлы для анализа
+files = ["clean_pure_text.txt", "clean_loanwords_text.txt"]
+
+# Запуск анализа
+for file in files:
+    calculate_average_word_length(file)
+
+from collections import Counter
+
+def extract_vowel_ngrams(words, vowels, n=2):
+    """Извлекает биграммы или триграммы гласных из списка слов"""
+    ngram_counts = Counter()
+
+    for word in words:
+        # Оставляем только гласные
+        word_vowels = [ch for ch in word if ch in vowels]
+
+        # Генерируем биграммы или триграммы
+        ngrams = ["".join(word_vowels[i:i+n]) for i in range(len(word_vowels) - (n-1))]
+
+        # Добавляем в счетчик
+        ngram_counts.update(ngrams)
+
+    return ngram_counts
+
+def find_harmony_violations(ngram_counts, front_vowels, back_vowels):
+    """Определяет биграммы и триграммы, нарушающие сингармонизм"""
+    violations = {}
+
+    for ngram, count in ngram_counts.items():
+        has_front = any(ch in front_vowels for ch in ngram)
+        has_back = any(ch in back_vowels for ch in ngram)
+
+        if has_front and has_back:
+            violations[ngram] = count  # Запоминаем нарушителей
+
+    return violations
+
+# Загружаем данные
+words1 = all_words("clean_pure_text.txt")
+words2 = all_words("clean_loanwords_text.txt")
+vowels = set(all_vowels("finnish_vowels.txt"))
+
+# Определяем ряды гласных
+front_vowels = {"ä", "ö", "y"}
+back_vowels = {"a", "o", "u"}
+
+# Анализ биграмм и триграмм
+bigrams1 = extract_vowel_ngrams(words1, vowels, n=2)
+bigrams2 = extract_vowel_ngrams(words2, vowels, n=2)
+
+trigrams1 = extract_vowel_ngrams(words1, vowels, n=3)
+trigrams2 = extract_vowel_ngrams(words2, vowels, n=3)
+
+# Поиск нарушений сингармонизма
+harmony_violations_bigrams1 = find_harmony_violations(bigrams1, front_vowels, back_vowels)
+harmony_violations_bigrams2 = find_harmony_violations(bigrams2, front_vowels, back_vowels)
+
+harmony_violations_trigrams1 = find_harmony_violations(trigrams1, front_vowels, back_vowels)
+harmony_violations_trigrams2 = find_harmony_violations(trigrams2, front_vowels, back_vowels)
+
+# Вывод результатов
+print("\n🔹 **ТОП-10 биграмм в Тексте 1**:", bigrams1.most_common(10))
+print("🔹 **ТОП-10 биграмм в Тексте 2**:", bigrams2.most_common(10))
+
+print("\n🔹 **ТОП-10 триграмм в Тексте 1**:", trigrams1.most_common(10))
+print("🔹 **ТОП-10 триграмм в Тексте 2**:", trigrams2.most_common(10))
+
+print("\n⚠️ **Биграммы с нарушением сингармонизма в Тексте 1**:", harmony_violations_bigrams1)
+print("⚠️ **Биграммы с нарушением сингармонизма в Тексте 2**:", harmony_violations_bigrams2)
+
+print("\n⚠️ **Триграммы с нарушением сингармонизма в Тексте 1**:", harmony_violations_trigrams1)
+print("⚠️ **Триграммы с нарушением сингармонизма в Тексте 2**:", harmony_violations_trigrams2)
+
+import matplotlib.pyplot as plt
+
+def plot_top_ngrams(ngram_counts, title, n=10):
+    """Строит график топ-N биграмм или триграмм"""
+    top_ngrams = ngram_counts.most_common(n)
+    labels, values = zip(*top_ngrams)
+
+    plt.figure(figsize=(10, 5))
+    plt.bar(labels, values, color="skyblue")
+    plt.xlabel("Биграммы/Триграммы")
+    plt.ylabel("Частота")
+    plt.title(title)
+    plt.xticks(rotation=45)
+    plt.grid(axis="y", linestyle="--", alpha=0.7)
+    plt.show()
+
+# Визуализация биграмм
+plot_top_ngrams(bigrams1, "Топ-10 биграмм в Оригинальном тексте")
+plot_top_ngrams(bigrams2, "Топ-10 биграмм в Заимствованных словах")
+
+# Визуализация триграмм
+plot_top_ngrams(trigrams1, "Топ-10 триграмм в Оригинальном тексте")
+plot_top_ngrams(trigrams2, "Топ-10 триграмм в Заимствованных словах")
+
+
+def plot_violations(violations, title):
+    """Строит график биграмм/триграмм, нарушающих сингармонизм"""
+    if not violations:
+        print(f"✅ Нет нарушений сингармонизма в {title}")
+        return
+
+    labels, values = zip(*sorted(violations.items(), key=lambda x: x[1], reverse=True)[:10])
+
+    plt.figure(figsize=(10, 5))
+    plt.bar(labels, values, color="red")
+    plt.xlabel("Биграммы/Триграммы")
+    plt.ylabel("Частота")
+    plt.title(title)
+    plt.xticks(rotation=45)
+    plt.grid(axis="y", linestyle="--", alpha=0.7)
+    plt.show()
+
+# Визуализация нарушений сингармонизма
+plot_violations(harmony_violations_bigrams1, "Биграммы с нарушением сингармонизма (Текст 1)")
+plot_violations(harmony_violations_bigrams2, "Биграммы с нарушением сингармонизма (Текст 2)")
+
+plot_violations(harmony_violations_trigrams1, "Триграммы с нарушением сингармонизма (Текст 1)")
+plot_violations(harmony_violations_trigrams2, "Триграммы с нарушением сингармонизма (Текст 2)")
+
+
+Выводы по проекту: 
